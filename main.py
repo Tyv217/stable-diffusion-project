@@ -1,9 +1,10 @@
 import pytorch_lightning as pl
+import torch
 
 from models import StableDiffusionModule
 
 def main():
-    model = StableDiffusionModule()
+    model = StableDiffusionModule().to("cuda" if torch.cuda.is_available() else "cpu")
     image = model.predict("King's College, Cambridge")
     import pdb
     pdb.set_trace()
