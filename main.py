@@ -2,7 +2,6 @@ import pytorch_lightning as pl
 
 from models import StableDiffusionModule
 
-
 def main():
     model = StableDiffusionModule()
     image = model.predict("King's College, Cambridge")
