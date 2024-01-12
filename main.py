@@ -21,8 +21,9 @@ def main():
 
     dataset = Dataset.from_pandas(pd.DataFrame(input_data))
 
-    model = StableDiffusionModule()
-    trainer = pl.Trainer(accelerator = "gpu", gpus = -1)
+    model = StableDiffusionModule("cuda" if torch.cuda.is_available() else "cpu")
+                                  
+    trainer = pl.Trainer(accelerator = "gpu")
     print(trainer)
     predictions = trainer.predict(model, dataset)
 
