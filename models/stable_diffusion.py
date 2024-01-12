@@ -6,7 +6,9 @@ class StableDiffusionModule(pl.LightningModule):
     def __init__(self):
         super().__init__()
         self.base_model = DiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16", use_safetensors=True
+            "stabilityai/stable-diffusion-xl-base-1.0", 
+            torch_dtype=torch.float16,
+            use_safetensors=True
         ).to(self.device)
 
         self.base_model.unet = torch.compile(self.base_model.unet, mode="reduce-overhead", fullgraph=True)
@@ -17,7 +19,6 @@ class StableDiffusionModule(pl.LightningModule):
             vae=self.base_model.vae,
             torch_dtype=torch.float16,
             use_safetensors=True,
-            variant="fp16",
         ).to(self.device)
 
         self.n_steps = 40
