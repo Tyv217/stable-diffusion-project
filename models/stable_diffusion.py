@@ -9,6 +9,8 @@ class StableDiffusionModule(pl.LightningModule):
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16", use_safetensors=True
         ).to(self.device)
 
+        self.base_model.unet = torch.compile(self.base_model.unet, mode="reduce-overhead", fullgraph=True)
+
         self.refiner_model = DiffusionPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-refiner-1.0",
             text_encoder_2=self.base_model.text_encoder_2,
