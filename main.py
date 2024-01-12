@@ -30,7 +30,7 @@ def main():
     prompt_count = {prompt: 0 for prompt in prompts}
 
     for input, prediction in zip(input_data, predictions):
-        prompt_count[input] += 1
+        prompt_count[input["input"]] += 1
         prediction.save(f"visual/{input}_{prompt_count[input]}.png")
     
 

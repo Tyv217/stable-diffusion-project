@@ -3,22 +3,21 @@ import pytorch_lightning as pl
 from diffusers import StableDiffusionPipeline
 
 class StableDiffusionModule(pl.LightningModule):
-    def __init__(self, split_gpus = False):
+    def __init__(self, device):
         super().__init__()
-        self.split_gpus = split_gpus
         self.model = StableDiffusionPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-5", 
             torch_dtype=torch.float16
         )
+        self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
         self.n_steps = 40
-        self.high_noise_frac = 0.8
 
     def forward(self, x):
-        image = self.base_model(
+        image = self.model(
             prompt=x,
             num_inference_steps=self.n_steps,
-        )[0]
+        )[0][0]
         
         return image
     
