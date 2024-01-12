@@ -6,16 +6,33 @@ from datasets import Dataset
 from models import StableDiffusionModule
 
 def main():
-    prompt = "King's College, Cambridge"
-    input_data = [{"input": prompt} for _ in range(10)]
+    prompts = [
+        "Cambridge University",
+        "A Cambridge college",
+        "Mathematical Bridge, Cambridge",
+        "Street view of Cambridge",
+        "Cambridge University Library",
+        "A Cambridge student"
+    ]
+    input_data = []
+    for _ in range(10):
+        for prompt in prompts:
+            input_data.append({"input": prompt})
+
     dataset = Dataset.from_pandas(pd.DataFrame(input_data))
 
     model = StableDiffusionModule()
     trainer = pl.Trainer(accelerator = "gpu", gpus = -1)
     print(trainer)
     predictions = trainer.predict(model, dataset)
-    import pdb
-    pdb.set_trace()
+
+    prompt_count = {prompt: 0 for prompt in prompts}
+
+    for input, prediction in zip(input_data, predictions):
+        prompt_count[input] += 1
+        prediction.save(f"{input}_{prompt_count[input]}.png")
+    
+
 
 
 if __name__ == "__main__":
