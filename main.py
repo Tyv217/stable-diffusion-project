@@ -31,7 +31,8 @@ def main():
 
     for input, prediction in zip(input_data, predictions):
         prompt_count[input["input"]] += 1
-        prediction.save(f"visual/{input['input']}_{prompt_count[input['input']]}.png")
+        prediction[0].save(f"visual/unrefined_{input['input']}_{prompt_count[input['input']]}.png")
+        prediction[1].save(f"visual/refined_{input['input']}_{prompt_count[input['input']]}.png")
     
 
 

@@ -77,7 +77,7 @@ class StableDiffusionLargeModule(pl.LightningModule):
         self.high_noise_frac = 0.8
 
     def forward(self, x):
-        image = self.base_model(
+        unrefined_image = self.base_model(
             prompt=x,
             num_inference_steps=self.n_steps,
             denoising_end=self.high_noise_frac,
@@ -88,10 +88,10 @@ class StableDiffusionLargeModule(pl.LightningModule):
             prompt=x,
             num_inference_steps=self.n_steps,
             denoising_start=self.high_noise_frac,
-            image=image,
+            image=unrefined_image,
         ).images[0]
         
-        return image
+        return (image, unrefined_image)
     
     def training_step(self, batch, batch_idx):
         # Extract the input and target from the batch
