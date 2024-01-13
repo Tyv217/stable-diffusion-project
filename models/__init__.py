@@ -1,1 +1,1 @@
-from .stable_diffusion import StableDiffusionModule
+from .stable_diffusion import StableDiffusionModule, StableDiffusionLargeModule

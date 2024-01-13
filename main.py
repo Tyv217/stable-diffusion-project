@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 import pandas as pd
 
 from datasets import Dataset
-from models import StableDiffusionModule
+from models import StableDiffusionModule, StableDiffusionLargeModule
 
 def main():
     prompts = [
@@ -21,7 +21,7 @@ def main():
 
     dataset = Dataset.from_pandas(pd.DataFrame(input_data))
 
-    model = StableDiffusionModule("cuda" if torch.cuda.is_available() else "cpu")
+    model = StableDiffusionLargeModule("cuda" if torch.cuda.is_available() else "cpu")
                                   
     trainer = pl.Trainer(accelerator = "gpu")
     print(trainer)
