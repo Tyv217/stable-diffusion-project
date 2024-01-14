@@ -4,8 +4,24 @@ import pandas as pd
 
 from datasets import Dataset
 from models import StableDiffusionModule, StableDiffusionLargeModule
+from data import CambridgeLandmarksData
+
+import argparse
 
 def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train', action='store_true')
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--data_dir', type=str, default="data/data_files")
+
+    args = parser.parse_args()
+    
+    trainer = pl.Trainer(accelerator = "gpu")
+
+    if args.train:
+        data = CambridgeLandmarksData(args.batch_size, args.data_dir)
+
     prompts = [
         "Cambridge University",
         "A Cambridge college",
@@ -23,8 +39,6 @@ def main():
 
     model = StableDiffusionLargeModule("cuda" if torch.cuda.is_available() else "cpu")
                                   
-    trainer = pl.Trainer(accelerator = "gpu")
-    print(trainer)
     predictions = trainer.predict(model, dataset)
 
     prompt_count = {prompt: 0 for prompt in prompts}

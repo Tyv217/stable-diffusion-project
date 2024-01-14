@@ -1,6 +1,7 @@
 import torch
 import pytorch_lightning as pl
-from diffusers import StableDiffusionPipeline, DiffusionPipeline
+from diffusers import StableDiffusionPipeline, DiffusionPipeline, DDPMScheduler
+from torchmetrics.image.fid import FrechetInceptionDistance
 
 class StableDiffusionModule(pl.LightningModule):
     def __init__(self, device):
@@ -12,6 +13,13 @@ class StableDiffusionModule(pl.LightningModule):
         self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
         self.n_steps = 40
+        self.fid = FrechetInceptionDistance(feature=64)
+        self.noise_scheduler = DDPMScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            num_train_timesteps=1000,
+        )
 
     def forward(self, x):
         image = self.model(
@@ -25,8 +33,40 @@ class StableDiffusionModule(pl.LightningModule):
         # Extract the input and target from the batch
         x = batch['input']
         y_hat = batch['output']
-        y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
+        fid.update(y_hat, real=True)
+        latents = self.model.vae.encode(x).to(dtype=weight_dtype)).latent_dist.sample()
+        latents = latents * 0.18215
+
+        # Sample noise that we'll add to the latents
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+
+        # Sample a random timestep for each image 
+        timesteps = torch.randint(
+            0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
+        )
+        timesteps = timesteps.long()
+
+        # Add noise to the latents according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+        # Get the text embedding for conditioning  
+        encoder_hidden_states = self.model.text_encoder(x)[0]
+
+        # Predict the noise residual
+        model_pred = self.model.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
+        # Get the target for loss depending on the prediction type
+        if noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif noise_scheduler.config.prediction_type == "v_prediction":
+            target = noise_scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
+        
+        loss = torch.nn.functional.mse_loss(model_pred.float(), target.float(), reduction="mean")
         self.log('train_loss', loss)
         return loss
     
@@ -34,7 +74,41 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y_hat = batch['output']
         y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
+        fid.update(y_hat, real=True)
+        latents = self.model.vae.encode(x).to(dtype=weight_dtype)).latent_dist.sample()
+        latents = latents * 0.18215
+
+        # Sample noise that we'll add to the latents
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+
+        # Sample a random timestep for each image 
+        timesteps = torch.randint(
+            0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
+        )
+        timesteps = timesteps.long()
+
+        # Add noise to the latents according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+        # Get the text embedding for conditioning  
+        encoder_hidden_states = self.model.text_encoder(x)[0]
+
+        # Predict the noise residual
+        model_pred = self.model.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
+        # Get the target for loss depending on the prediction type
+        if noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif noise_scheduler.config.prediction_type == "v_prediction":
+            target = noise_scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
+        
+        loss = torch.nn.functional.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        
         self.log('val_loss', loss)
         return loss
     
@@ -48,7 +122,12 @@ class StableDiffusionModule(pl.LightningModule):
     
     def predict_step(self, batch, batch_idx):
         x = batch['input']
+        y = self(x)
+        fid.update(y, real=False)
         return self(x)
+
+    def get_fid_score(self):
+        return fid.compute()
         
 class StableDiffusionLargeModule(pl.LightningModule):
     def __init__(self, device):

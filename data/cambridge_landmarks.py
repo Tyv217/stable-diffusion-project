@@ -4,27 +4,8 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from torchvision import transforms
 from PIL import Image
 
-class CambridgeLandmarksData(pl.LightningDataModule):
-    def __init__(self):
-        super().__init__()
-    
-    def prepare_data(self):
-        pass
-    
-    def setup(self, stage=None):
-        pass
-    
-    def train_dataloader(self):
-        pass
-    
-    def val_dataloader(self):
-        pass
-    
-    def test_dataloader(self):
-        pass
-
 class ImageDataset(Dataset):
-    def __init__(self, img_dir, transform=None):
+    def __init__(self, img_dir, transform):
         self.img_dir = img_dir
         self.transform = transform
         prompts = {
@@ -41,7 +22,7 @@ class ImageDataset(Dataset):
         for prompt in prompts.keys():
             img_names = os.listdir(img_dir + "/" + prompt)
             for img_name in img_names:
-                imgs.append((prompts[prompt], prompt + "/" + img_name)
+                self.imgs.append((prompts[prompt], prompt + "/" + img_name)
 
     def __len__(self):
         return len(self.imgs)
@@ -50,8 +31,7 @@ class ImageDataset(Dataset):
         img = self.imgs[idx]
         img_path = os.path.join(self.img_dir, img[1])
         image = Image.open(img_path).convert('RGB')
-        if self.transform:
-            image = self.transform(image)
+        image = self.transform(image)
         return {"input": img[0], "output": image}
 
 class CambridgeLandmarksData(pl.LightningDataModule):
@@ -66,7 +46,7 @@ class CambridgeLandmarksData(pl.LightningDataModule):
         ])
 
     def setup(self, stage = None):
-        dataset = ImageDataset(self.data_dir, transform=self.transform)
+        full_dataset = ImageDataset(self.data_dir, transform=self.transform)
         train_size = int(len(full_dataset) * 0.9)
         val_size = len(full_dataset) - train_size
         self.train_dataset, self.val_dataset = random_split(full_dataset, [train_size, val_size])
