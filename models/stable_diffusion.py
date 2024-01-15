@@ -44,6 +44,8 @@ class StableDiffusionModule(pl.LightningModule):
             num_train_timesteps=1000,
         )
         self.max_training_steps = max_training_steps
+        self.real_images = []
+        self.fake_images = []
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -77,7 +79,8 @@ class StableDiffusionModule(pl.LightningModule):
         except:
             attention_mask = None
         y_hat = batch['output']
-        self.fid.update(self.to_tensor(y_hat), real=True)
+        y_tensor = self.to_tensor(y_hat)
+        self.real_images.append(y_tensor)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -125,7 +128,8 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y_hat = batch['output']
         y = self.forward(x)
-        self.fid.update(self.to_tensor(y_hat), real=True)
+        y_tensor = self.to_tensor(y_hat)
+        self.real_images.append(y_tensor)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -175,19 +179,28 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y = self(x)
         y_tensor = self.to_tensor(y)
-        self.fid.update(y_tensor, real=False)
-        self.inception.update(y_tensor)
+        self.fake_images.append(y_tensor)
         return self(x)
 
     def get_inception_score(self):
+        fake_images = torch.tensor(self.fake_images)
+        self.inception.update(fake_images))
         score = self.inception.compute()
         self.inception.reset()
         return score
 
     def get_fid_score(self):
+        real_images = torch.tensor(self.real_images)
+        fake_images = torch.tensor(self.fake_images)
+        self.fid.update(real_images, real=True)
+        self.fid.update(fake_images, real=False)
         score = self.fid.compute()
         self.fid.reset()
         return score
+
+    def reset_images(self):
+        self.fake_images = []
+        return
         
 class StableDiffusionLargeModule(pl.LightningModule):
     def __init__(self, device):

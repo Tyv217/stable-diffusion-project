@@ -58,6 +58,8 @@ def main():
     print(f"Fid Score: {model.get_fid_score()}")
     print(f"Inception Score: {model.get_inception_score()}")
 
+    model.reset_images()
+
     trainer.train(model, training_data)
         
     predictions = trainer.predict(model, dataset)
