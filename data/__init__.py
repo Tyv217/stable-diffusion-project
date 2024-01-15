@@ -1,1 +1,1 @@
-from .cambridge_landmarks improt CambridgeLandmarksData
+from .cambridge_landmarks import CambridgeLandmarksData

@@ -1,10 +1,11 @@
 import torch
 import pytorch_lightning as pl
 from diffusers import StableDiffusionPipeline, DiffusionPipeline, DDPMScheduler
+from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
 
 class StableDiffusionModule(pl.LightningModule):
-    def __init__(self, device):
+    def __init__(self, device, max_training_steps):
         super().__init__()
         self.model = StableDiffusionPipeline.from_pretrained(
             "runwayml/stable-diffusion-v1-4", 
@@ -20,6 +21,7 @@ class StableDiffusionModule(pl.LightningModule):
             beta_schedule="scaled_linear",
             num_train_timesteps=1000,
         )
+        self.max_training_steps = max_training_steps    
 
     def forward(self, x):
         image = self.model(
@@ -34,7 +36,7 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y_hat = batch['output']
         fid.update(y_hat, real=True)
-        latents = self.model.vae.encode(x).to(dtype=weight_dtype)).latent_dist.sample()
+        latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
         # Sample noise that we'll add to the latents
@@ -75,7 +77,7 @@ class StableDiffusionModule(pl.LightningModule):
         y_hat = batch['output']
         y = self.forward(x)
         fid.update(y_hat, real=True)
-        latents = self.model.vae.encode(x).to(dtype=weight_dtype)).latent_dist.sample()
+        latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
         # Sample noise that we'll add to the latents
@@ -128,6 +130,22 @@ class StableDiffusionModule(pl.LightningModule):
 
     def get_fid_score(self):
         return fid.compute()
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            params_to_optimize,
+            lr=args.learning_rate,
+            betas=(args.adam_beta1, args.adam_beta2),
+            weight_decay=args.adam_weight_decay,
+            eps=args.adam_epsilon,
+        )
+        lr_scheduler = get_scheduler(
+            'constant',
+            optimizer = optimizer,
+            num_warmup_steps = 500,
+            num_training_steps = self.max_training_steps,
+
+        )
         
 class StableDiffusionLargeModule(pl.LightningModule):
     def __init__(self, device):
