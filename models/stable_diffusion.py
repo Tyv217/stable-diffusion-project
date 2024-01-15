@@ -3,25 +3,50 @@ import pytorch_lightning as pl
 from diffusers import StableDiffusionPipeline, DiffusionPipeline, DDPMScheduler
 from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image.inception import InceptionScore
 
 class StableDiffusionModule(pl.LightningModule):
-    def __init__(self, device, max_training_steps = None):
+    def __init__(self, device, max_training_steps, model_size, precision):
         super().__init__()
-        self.model = StableDiffusionPipeline.from_pretrained(
-            "CompVis/stable-diffusion-v1-4", 
-            torch_dtype=torch.float32
-        )
+        dtype = torch.float32 if precision == 32 else torch.float16
+        if model_size == "small":
+            self.model = StableDiffusionPipeline.from_pretrained(
+                "CompVis/stable-diffusion-v1-4", 
+                torch_dtype=dtype
+        else：
+            self.model = StableDiffusionPipeline.from_pretrained(
+                "nota-ai/bk-sdm-small", 
+                torch_dtype=dtype
+            )
+
         self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
         self.n_steps = 40
-        self.fid = FrechetInceptionDistance(feature=64)
+        self.fid = FrechetInceptionDistance(feature=64, reset_real_features=False)
+        self.inception = InceptionScore(feature=64)
         self.noise_scheduler = DDPMScheduler(
             beta_start=0.00085,
             beta_end=0.012,
             beta_schedule="scaled_linear",
             num_train_timesteps=1000,
         )
-        self.max_training_steps = max_training_steps    
+        self.max_training_steps = max_training_steps
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=5e-6,
+            betas=(0.9, 0.999),
+            weight_decay=1e-2,
+            eps=1e-08,
+        )
+        lr_scheduler = get_scheduler(
+            'constant',
+            optimizer = optimizer,
+            num_warmup_steps = 500,
+            num_training_steps = self.max_training_steps,
+        )
+        return optimizer, lr_scheduler    
 
     def forward(self, x):
         image = self.model(
@@ -39,7 +64,7 @@ class StableDiffusionModule(pl.LightningModule):
         except:
             attention_mask = None
         y_hat = batch['output']
-        fid.update(y_hat, real=True)
+        self.fid.update(y_hat, real=True)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -87,7 +112,7 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y_hat = batch['output']
         y = self.forward(x)
-        fid.update(y_hat, real=True)
+        self.fid.update(y_hat, real=True)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -136,27 +161,19 @@ class StableDiffusionModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         x = batch['input']
         y = self(x)
-        fid.update(y, real=False)
+        self.fid.update(y, real=False)
+        self.inception.update(y)
         return self(x)
 
+    def get_inception_score(self):
+        score = self.inception.compute()
+        self.inception.reset()
+        return score
+
     def get_fid_score(self):
-        return fid.compute()
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=5e-6,
-            betas=(args.adam_beta1, args.adam_beta2),
-            weight_decay=args.adam_weight_decay,
-            eps=args.adam_epsilon,
-        )
-        lr_scheduler = get_scheduler(
-            'constant',
-            optimizer = optimizer,
-            num_warmup_steps = 500,
-            num_training_steps = self.max_training_steps,
-
-        )
+        score = self.fid.compute()
+        self.fid.reset()
+        return score
         
 class StableDiffusionLargeModule(pl.LightningModule):
     def __init__(self, device):
@@ -166,71 +183,6 @@ class StableDiffusionLargeModule(pl.LightningModule):
             torch_dtype=torch.float16,
             use_safetensors=True
         )
-
-        self.base_model.to(device)
-
-        self.base_model.unet = torch.compile(self.base_model.unet, mode="reduce-overhead", fullgraph=True)
-
-        self.refiner_model = DiffusionPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-refiner-1.0",
-            text_encoder_2=self.base_model.text_encoder_2,
-            vae=self.base_model.vae,
-            torch_dtype=torch.float16,
-            use_safetensors=True,
-        )
-
-        self.refiner_model.to(device)
-
-        self.n_steps = 40
-        self.high_noise_frac = 0.8
-
-    def forward(self, x):
-        unrefined_image = self.base_model(
-            prompt=x,
-            num_inference_steps=self.n_steps,
-            denoising_end=self.high_noise_frac,
-            output_type="latent",
-        ).images
-
-        image = self.refiner_model(
-            prompt=x,
-            num_inference_steps=self.n_steps,
-            denoising_start=self.high_noise_frac,
-            image=unrefined_image,
-        ).images[0]
-        
-        return (image, unrefined_image)
-    
-    def training_step(self, batch, batch_idx):
-        # Extract the input and target from the batch
-        x, y_hat = batch
-        y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
-        self.log('train_loss', loss)
-        return loss
-    
-    def validation_step(self, batch, batch_idx):
-        x, y_hat = batch
-        y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
-        self.log('val_loss', loss)
-        return loss
-    
-    def test_step(self, batch, batch_idx):
-        x, y_hat = batch
-        y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
-        self.log('test_loss', loss)
-        return loss
-
-    def predict_step(self, batch, batch_idx):
-        x = batch['input']
-        return self(x)
-
-class StableDiffusionSmallModule(pl.LightningModule):
-    def __init__(self, device):
-        super().__init__()
-        self.base_model = StableDiffusionPipeline.from_pretrained("nota-ai/bk-sdm-small", torch_dtype=torch.float16)
 
         self.base_model.to(device)
 

@@ -14,6 +14,9 @@ def main():
     parser.add_argument('--train_target', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--data_dir', type=str, default="data/data_files")
+    parser.add_argument('--max_training_steps', type=int, default=2000)
+    parser.add_argument('--model_size', type=str, default="base")
+    parser.add_argument('--precision', type=int, default=32)
 
     args = parser.parse_args()
     
@@ -37,7 +40,12 @@ def main():
 
     dataset = Dataset.from_pandas(pd.DataFrame(input_data))
 
-    model = StableDiffusionModule("cuda" if torch.cuda.is_available() else "cpu")
+    model = StableDiffusionModule(
+        device = "cuda" if torch.cuda.is_available() else "cpu",
+        max_training_steps = args.max_training_steps,
+        model_size = args.model_size,
+        precision = args.precision
+    )
                                   
     predictions = trainer.predict(model, dataset)
 
@@ -46,6 +54,9 @@ def main():
     for input, prediction in zip(input_data, predictions):
         prompt_count[input["input"]] += 1
         prediction.save(f"visual/before_{input['input']}_{prompt_count[input['input']]}.png")
+
+    print(f"Fid Score: {model.get_fid_score()}")
+    print(f"Inception Score: {model.get_inception_score()}")
 
     trainer.train(model, training_data)
         
@@ -57,6 +68,8 @@ def main():
         prompt_count[input["input"]] += 1
         prediction.save(f"visual/after_{input['input']}_{prompt_count[input['input']]}.png")
     
+    print(f"Fid Score: {model.get_fid_score()}")
+    print(f"Inception Score: {model.get_inception_score()}")
 
 
 
