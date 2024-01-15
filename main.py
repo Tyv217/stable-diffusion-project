@@ -19,7 +19,7 @@ def main():
     
     trainer = pl.Trainer(accelerator = "gpu")
 
-    training_data = CambridgeLandmarksData(args.batch_size, args.data_dir)
+    training_data = CambridgeLandmarksData(args.train_target, args.batch_size, args.data_dir)
 
     prompts = [
         "A university in Cambridge",

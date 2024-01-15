@@ -5,7 +5,7 @@ from torchvision import transforms
 from PIL import Image
 
 class ImageDataset(Dataset):
-    def __init__(self, img_dir, transform):
+    def __init__(self, train_target, img_dir, transform):
         self.img_dir = img_dir
         self.transform = transform
         prompts = {
@@ -19,7 +19,7 @@ class ImageDataset(Dataset):
 
         self.imgs = []
 
-        for prompt in prompts.keys():
+        for prompt in prompts[train_target]:
             img_names = os.listdir(img_dir + "/" + prompt)
             for img_name in img_names:
                 self.imgs.append((prompts[prompt], prompt + "/" + img_name))
@@ -35,8 +35,9 @@ class ImageDataset(Dataset):
         return {"input": img[0], "output": image}
 
 class CambridgeLandmarksData(pl.LightningDataModule):
-    def __init__(self, batch_size, data_dir):
+    def __init__(self, train_target, batch_size, data_dir):
         super().__init__()
+        self.train_target = train_target
         self.batch_size = batch_size
         self.data_dir = data_dir
         self.transform = transforms.Compose([
@@ -46,7 +47,7 @@ class CambridgeLandmarksData(pl.LightningDataModule):
         ])
 
     def setup(self, stage = None):
-        full_dataset = ImageDataset(self.data_dir, transform=self.transform)
+        full_dataset = ImageDataset(self.train_target, self.data_dir, transform=self.transform)
         train_size = int(len(full_dataset) * 0.9)
         val_size = len(full_dataset) - train_size
         self.train_dataset, self.val_dataset = random_split(full_dataset, [train_size, val_size])
