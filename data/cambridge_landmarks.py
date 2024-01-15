@@ -19,10 +19,11 @@ class ImageDataset(Dataset):
 
         self.imgs = []
 
-        for prompt in prompts[train_target]:
-            img_names = os.listdir(img_dir + "/" + prompt)
-            for img_name in img_names:
-                self.imgs.append((prompts[prompt], prompt + "/" + img_name))
+        prompt = prompt.keys()[train_target]
+
+        img_names = os.listdir(img_dir + "/" + prompt)
+        for img_name in img_names:
+            self.imgs.append((prompts[prompt], prompt + "/" + img_name))
 
     def __len__(self):
         return len(self.imgs)
