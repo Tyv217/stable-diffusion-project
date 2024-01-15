@@ -13,7 +13,8 @@ class StableDiffusionModule(pl.LightningModule):
             self.model = StableDiffusionPipeline.from_pretrained(
                 "CompVis/stable-diffusion-v1-4", 
                 torch_dtype=dtype
-        else：
+            )
+        else:
             self.model = StableDiffusionPipeline.from_pretrained(
                 "nota-ai/bk-sdm-small", 
                 torch_dtype=dtype
