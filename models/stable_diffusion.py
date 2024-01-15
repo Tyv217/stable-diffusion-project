@@ -6,6 +6,15 @@ from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
 
+class ToUInt8Tensor(transforms.ToTensor):
+    """ Convert images to UInt8Tensor. """
+
+    def __call__(self, pic):
+        float_tensor = super(ToUInt8Tensor, self).__call__(pic)
+        uint8_tensor = (float_tensor * 255).type(torch.uint8)
+
+        return uint8_tensor
+
 class StableDiffusionModule(pl.LightningModule):
     def __init__(self, device, max_training_steps, model_size, precision):
         super().__init__()
@@ -21,7 +30,7 @@ class StableDiffusionModule(pl.LightningModule):
                 torch_dtype=dtype
             )
 
-        self.to_tensor = transforms.ToTensor()
+        self.to_tensor = ToUInt8Tensor()
 
         self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
@@ -165,7 +174,7 @@ class StableDiffusionModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         x = batch['input']
         y = self(x)
-        y_tensor = self.to_tensor(y_hat)
+        y_tensor = self.to_tensor(y)
         self.fid.update(y_tensor, real=False)
         self.inception.update(y_tensor)
         return self(x)
