@@ -33,12 +33,12 @@ def main():
         "A student in Cambridge"
     ]
 
-    input_data = []
-    for _ in range(10):
-        for prompt in prompts:
-            input_data.append({"input": prompt})
+    # input_data = []
+    # for _ in range(10):
+    #     for prompt in prompts:
+    #         input_data.append({"input": prompt})
 
-    dataset = Dataset.from_pandas(pd.DataFrame(input_data))
+    # dataset = Dataset.from_pandas(pd.DataFrame(input_data))
 
     model = StableDiffusionModule(
         device = "cuda" if torch.cuda.is_available() else "cpu",
@@ -47,13 +47,13 @@ def main():
         precision = args.precision
     )
                                   
-    predictions = trainer.predict(model, dataset)
+    # predictions = trainer.predict(model, dataset)
 
-    prompt_count = {prompt: 0 for prompt in prompts}
+    # prompt_count = {prompt: 0 for prompt in prompts}
 
-    for input, prediction in zip(input_data, predictions):
-        prompt_count[input["input"]] += 1
-        prediction.save(f"visual/before_{input['input']}_{prompt_count[input['input']]}.png")
+    # for input, prediction in zip(input_data, predictions):
+    #     prompt_count[input["input"]] += 1
+    #     prediction.save(f"visual/before_{input['input']}_{prompt_count[input['input']]}.png")
 
     trainer.fit(model, training_data)
 

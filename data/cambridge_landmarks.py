@@ -19,7 +19,7 @@ class ImageDataset(Dataset):
 
         self.imgs = []
 
-        prompt = prompt.keys()[train_target]
+        prompt = prompts.keys()[train_target]
 
         img_names = os.listdir(img_dir + "/" + prompt)
         for img_name in img_names:
