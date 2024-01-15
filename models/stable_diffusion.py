@@ -183,15 +183,15 @@ class StableDiffusionModule(pl.LightningModule):
         return self(x)
 
     def get_inception_score(self):
-        fake_images = torch.tensor(self.fake_images)
-        self.inception.update(fake_images))
+        fake_images = torch.stack(self.fake_images, dim=0)
+        self.inception.update(fake_images)
         score = self.inception.compute()
         self.inception.reset()
         return score
 
     def get_fid_score(self):
-        real_images = torch.tensor(self.real_images)
-        fake_images = torch.tensor(self.fake_images)
+        real_images = torch.stack(self.real_images, dim=0)
+        fake_images = torch.stack(self.fake_images, dim=0)
         self.fid.update(real_images, real=True)
         self.fid.update(fake_images, real=False)
         score = self.fid.compute()
