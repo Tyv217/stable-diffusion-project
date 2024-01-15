@@ -5,11 +5,11 @@ from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
 
 class StableDiffusionModule(pl.LightningModule):
-    def __init__(self, device, max_training_steps):
+    def __init__(self, device, max_training_steps = None):
         super().__init__()
         self.model = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-4", 
-            torch_dtype=torch.float16
+            "CompVis/stable-diffusion-v1-4", 
+            torch_dtype=torch.float32
         )
         self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
@@ -34,6 +34,10 @@ class StableDiffusionModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Extract the input and target from the batch
         x = batch['input']
+        try:
+            attention_mask = batch['attention_mask']
+        except:
+            attention_mask = None
         y_hat = batch['output']
         fid.update(y_hat, real=True)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
@@ -53,8 +57,15 @@ class StableDiffusionModule(pl.LightningModule):
         # (this is the forward diffusion process)
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-        # Get the text embedding for conditioning  
-        encoder_hidden_states = self.model.text_encoder(x)[0]
+        # Get the text embedding for conditioning
+        text_input_ids = input_ids.to(text_encoder.device)
+
+        prompt_embeds = self.model.text_encoder(
+            text_input_ids,
+            attention_mask=attention_mask,
+            return_dict=False,
+        )
+        encoder_hidden_states = prompt_embeds[0]  
 
         # Predict the noise residual
         model_pred = self.model.unet(noisy_latents, timesteps, encoder_hidden_states).sample
@@ -133,8 +144,8 @@ class StableDiffusionModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
-            params_to_optimize,
-            lr=args.learning_rate,
+            self.model.parameters(),
+            lr=5e-6,
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
