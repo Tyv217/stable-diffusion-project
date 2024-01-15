@@ -55,7 +55,7 @@ def main():
         prompt_count[input["input"]] += 1
         prediction.save(f"visual/before_{input['input']}_{prompt_count[input['input']]}.png")
 
-    trainer.train(model, training_data)
+    trainer.fit(model, training_data)
 
     print(f"Fid Score: {model.get_fid_score()}")
     print(f"Inception Score: {model.get_inception_score()}")
