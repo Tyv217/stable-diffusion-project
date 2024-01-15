@@ -13,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_target', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=2)
-    parser.add_argument('--data_dir', type=str, default="data/data_files")
+    parser.add_argument('--data_dir', type=str, default="/home/xty20/stable-diffusion-project/data/data_files")
     parser.add_argument('--max_training_steps', type=int, default=2000)
     parser.add_argument('--model_size', type=str, default="base")
     parser.add_argument('--precision', type=int, default=32)
