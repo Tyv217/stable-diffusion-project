@@ -1,5 +1,6 @@
 import torch
 import pytorch_lightning as pl
+from torchvision import transforms
 from diffusers import StableDiffusionPipeline, DiffusionPipeline, DDPMScheduler
 from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
@@ -19,6 +20,8 @@ class StableDiffusionModule(pl.LightningModule):
                 "nota-ai/bk-sdm-small", 
                 torch_dtype=dtype
             )
+
+        self.to_tensor = transforms.ToTensor()
 
         self.model.to(device)
         self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
@@ -65,7 +68,7 @@ class StableDiffusionModule(pl.LightningModule):
         except:
             attention_mask = None
         y_hat = batch['output']
-        self.fid.update(y_hat, real=True)
+        self.fid.update(self.to_tensor(y_hat), real=True)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -113,7 +116,7 @@ class StableDiffusionModule(pl.LightningModule):
         x = batch['input']
         y_hat = batch['output']
         y = self.forward(x)
-        self.fid.update(y_hat, real=True)
+        self.fid.update(self.to_tensor(y_hat), real=True)
         latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
         latents = latents * 0.18215
 
@@ -162,8 +165,9 @@ class StableDiffusionModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         x = batch['input']
         y = self(x)
-        self.fid.update(y, real=False)
-        self.inception.update(y)
+        y_tensor = self.to_tensor(y_hat)
+        self.fid.update(y_tensor, real=False)
+        self.inception.update(y_tensor)
         return self(x)
 
     def get_inception_score(self):
