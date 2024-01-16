@@ -1,3 +1,4 @@
+import itertools
 import torch
 import pytorch_lightning as pl
 from torchvision import transforms
@@ -48,8 +49,11 @@ class StableDiffusionModule(pl.LightningModule):
         self.fake_images = []
 
     def configure_optimizers(self):
+        params_to_optimize = (
+            itertools.chain(self.model.unet.parameters(), self.model.text_encoder.parameters())
+        )
         optimizer = torch.optim.AdamW(
-            self.model.parameters(),
+            params_to_optimize,
             lr=5e-6,
             betas=(0.9, 0.999),
             weight_decay=1e-2,
