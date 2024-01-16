@@ -7,37 +7,99 @@ from diffusers.optimization import get_scheduler
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.inception import InceptionScore
 
-class ToUInt8Tensor(transforms.ToTensor):
+import argparse
+import copy
+import gc
+import importlib
+import itertools
+import logging
+import math
+import os
+import shutil
+import warnings
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+import torch.utils.checkpoint
+import transformers
+from accelerate import Accelerator
+from accelerate.logging import get_logger
+from accelerate.utils import ProjectConfiguration, set_seed
+from huggingface_hub import create_repo, model_info, upload_folder
+from huggingface_hub.utils import insecure_hashlib
+from packaging import version
+from PIL import Image
+from PIL.ImageOps import exif_transpose
+from torch.utils.data import Dataset
+from torchvision import transforms
+from tqdm.auto import tqdm
+from transformers import AutoTokenizer, PretrainedConfig
+
+import diffusers
+from diffusers import (
+    AutoencoderKL,
+    DDPMScheduler,
+    DiffusionPipeline,
+    StableDiffusionPipeline,
+    UNet2DConditionModel,
+)
+from diffusers.optimization import get_scheduler
+from diffusers.training_utils import compute_snr
+from diffusers.utils import check_min_version, is_wandb_available
+from diffusers.utils.import_utils import is_xformers_available
+from diffusers.utils.torch_utils import is_compiled_module
+
+class UInt8Transform():
     """ Convert images to UInt8Tensor. """
 
-    def __call__(self, pic):
-        float_tensor = super(ToUInt8Tensor, self).__call__(pic)
+    def __call__(self, float_tensor):
         uint8_tensor = (float_tensor * 255).type(torch.uint8)
-
         return uint8_tensor
 
 class StableDiffusionModule(pl.LightningModule):
-    def __init__(self, device, max_training_steps, model_size, precision):
+    def __init__(self, device, max_training_steps, model_size, precision, output_dir, logging_dir, snr_gamma = 5.0, prior_loss_weight = 1.0, max_grad_norm = 1.0):
         super().__init__()
-        dtype = torch.float32 if precision == 32 else torch.float16
-        if model_size == "small":
-            self.model = StableDiffusionPipeline.from_pretrained(
-                "CompVis/stable-diffusion-v1-4", 
-                torch_dtype=dtype
-            )
+        self.precision = torch.float32 if precision == 32 else torch.float16
+        if model_size != "small":
+            self.model_name = "CompVis/stable-diffusion-v1-4"
         else:
-            self.model = StableDiffusionPipeline.from_pretrained(
-                "nota-ai/bk-sdm-small", 
-                torch_dtype=dtype
-            )
+            self.model_name = "nota-ai/bk-sdm-small"
 
-        self.to_tensor = ToUInt8Tensor()
-
-        self.model.to(device)
-        self.model.unet = torch.compile(self.model.unet, mode="reduce-overhead", fullgraph=True)
+        self.uint8transform = UInt8Transform()
         self.n_steps = 40
         self.fid = FrechetInceptionDistance(feature=64, reset_real_features=False)
         self.inception = InceptionScore(feature=64)
+        accelerator_project_config = ProjectConfiguration(project_dir=output_dir, logging_dir=logging_dir)
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=1,
+            mixed_precision="no",
+            log_with="tensorboard",
+            project_config=accelerator_project_config,
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            subfolder="tokenizer",
+            use_fast=False,
+        )
+        text_encoder_cls = self.import_model_class_from_model_name_or_path(self.model_name)
+        self.text_encoder = text_encoder_cls.from_pretrained(
+            self.model_name,
+            subfolder="text_encoder",
+        )
+        self.text_encoder.to(device)
+        self.vae = AutoencoderKL.from_pretrained(
+            self.model_name, 
+            subfolder="vae"
+        )
+        self.vae.to(device)
+        self.unet = UNet2DConditionModel.from_pretrained(
+            self.model_name, 
+            subfolder="unet"
+        )
+        self.unet.to(device)
         self.noise_scheduler = DDPMScheduler(
             beta_start=0.00085,
             beta_end=0.012,
@@ -45,12 +107,16 @@ class StableDiffusionModule(pl.LightningModule):
             num_train_timesteps=1000,
         )
         self.max_training_steps = max_training_steps
+        self.snr_gamma = snr_gamma
+        self.prior_loss_weight = prior_loss_weight
+        self.max_grad_norm = max_grad_norm
         self.real_images = []
         self.fake_images = []
+        torch.backends.cuda.matmul.allow_tf32 = True
 
     def configure_optimizers(self):
         params_to_optimize = (
-            itertools.chain(self.model.unet.parameters(), self.model.text_encoder.parameters())
+            itertools.chain(self.unet.parameters(), self.text_encoder.parameters())
         )
         optimizer = torch.optim.AdamW(
             params_to_optimize,
@@ -65,124 +131,175 @@ class StableDiffusionModule(pl.LightningModule):
             num_warmup_steps = 500,
             num_training_steps = self.max_training_steps,
         )
-        return optimizer, lr_scheduler    
+        return [optimizer], [lr_scheduler]
 
     def forward(self, x):
-        image = self.model(
-            prompt=x,
-            num_inference_steps=self.n_steps,
-        )[0][0]
+        
+        self.model.text_encoder.to(self.unet.device)
+        self.model.unet.to(self.unet.device)
+        self.model.vae.to(self.unet.device)
+        self.model.safety_checker.to(self.unet.device)
+        try:
+            image = self.model(prompt=x,num_inference_steps=self.n_steps)[0][0]
+        except:
+            import pdb
+            pdb.set_trace()
+    
         
         return image
     
     def training_step(self, batch, batch_idx):
-        # Extract the input and target from the batch
-        x = batch['input']
-        try:
-            attention_mask = batch['attention_mask']
-        except:
-            attention_mask = None
-        y_hat = batch['output']
-        y_tensor = self.to_tensor(y_hat)
-        self.real_images.append(y_tensor)
-        latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
-        latents = latents * 0.18215
+        self.unet.train()
+        self.text_encoder.train()
+        with self.accelerator.accumulate(self.unet):
+            
+            pixel_values = batch["pixel_values"].to(dtype=self.precision)
+            for pixel_value in pixel_values:
+                self.real_images.append(self.uint8transform(pixel_value.detach().clone().cpu()))
 
-        # Sample noise that we'll add to the latents
-        noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
+            if self.vae is not None:
+                # Convert images to latent space
+                model_input = self.vae.encode(batch["pixel_values"].to(dtype=self.precision)).latent_dist.sample()
+                model_input = model_input * self.vae.config.scaling_factor
+            else:
+                model_input = pixel_values
 
-        # Sample a random timestep for each image 
-        timesteps = torch.randint(
-            0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
-        )
-        timesteps = timesteps.long()
+            noise = torch.randn_like(model_input)
+            bsz, channels, height, width = model_input.shape
+            # Sample a random timestep for each image
+            timesteps = torch.randint(
+                0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=model_input.device
+            )
+            timesteps = timesteps.long()
 
-        # Add noise to the latents according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+            # Add noise to the model input according to the noise magnitude at each timestep
+            # (this is the forward diffusion process)
+            noisy_model_input = self.noise_scheduler.add_noise(model_input, noise, timesteps)
 
-        # Get the text embedding for conditioning
+            encoder_hidden_states = self.encode_prompt(
+                self.text_encoder,
+                batch["input_ids"],
+                batch["attention_mask"],
+                text_encoder_use_attention_mask=True,
+            )
+
+            if self.unwrap_model(self.unet).config.in_channels == channels * 2:
+                noisy_model_input = torch.cat([noisy_model_input, noisy_model_input], dim=1)
+
+            # Predict the noise residual
+            model_pred = self.unet(noisy_model_input, timesteps, encoder_hidden_states, class_labels=None, return_dict=False)[0]
+
+            if model_pred.shape[1] == 6:
+                model_pred, _ = torch.chunk(model_pred, 2, dim=1)
+
+            # Get the target for loss depending on the prediction type
+            if self.noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif self.noise_scheduler.config.prediction_type == "v_prediction":
+                target = self.noise_scheduler.get_velocity(model_input, noise, timesteps)
+            else:
+                raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+
+            # Chunk the noise and model_pred into two parts and compute the loss on each part separately.
+            model_pred, model_pred_prior = torch.chunk(model_pred, 2, dim=0)
+            target, target_prior = torch.chunk(target, 2, dim=0)
+            # Compute prior loss
+            prior_loss = F.mse_loss(model_pred_prior.float(), target_prior.float(), reduction="mean")
+
+            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+            # This is discussed in Section 4.2 of the same paper.
+            
+            timesteps, timesteps_prior = torch.chunk(timesteps, 2, dim=0)
+            snr = compute_snr(self.noise_scheduler, timesteps)
+            base_weight = (
+                torch.stack([snr, self.snr_gamma * torch.ones_like(timesteps)], dim=1).min(dim=1)[0] / snr
+            )
+
+            if self.noise_scheduler.config.prediction_type == "v_prediction":
+                # Velocity objective needs to be floored to an SNR weight of one.
+                mse_loss_weights = base_weight + 1
+            else:
+                # Epsilon and sample both use the same loss weights.
+                mse_loss_weights = base_weight
+
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+
+            # import pdb
+            # pdb.set_trace()
+
+            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
+            loss = loss.mean()
+
+            loss = loss + self.prior_loss_weight * prior_loss
+
+            if self.accelerator.sync_gradients:
+                params_to_clip = (
+                    itertools.chain(self.unet.parameters(), self.text_encoder.parameters())
+                )
+                self.accelerator.clip_grad_norm_(params_to_clip, self.max_grad_norm)
+
+        self.log('train_loss', loss)
+        return loss
+
+    def unwrap_model(self, model):
+        model = self.accelerator.unwrap_model(model)
+        model = model._orig_mod if is_compiled_module(model) else model
+        return model
+
+    def encode_prompt(self, text_encoder, input_ids, attention_mask, text_encoder_use_attention_mask=None):
         text_input_ids = input_ids.to(text_encoder.device)
 
-        prompt_embeds = self.model.text_encoder(
+        if text_encoder_use_attention_mask:
+            attention_mask = attention_mask.to(text_encoder.device)
+        else:
+            attention_mask = None
+
+        prompt_embeds = text_encoder(
             text_input_ids,
             attention_mask=attention_mask,
             return_dict=False,
         )
-        encoder_hidden_states = prompt_embeds[0]  
+        prompt_embeds = prompt_embeds[0]
 
-        # Predict the noise residual
-        model_pred = self.model.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+        return prompt_embeds
 
-        # Get the target for loss depending on the prediction type
-        if noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif noise_scheduler.config.prediction_type == "v_prediction":
-            target = noise_scheduler.get_velocity(latents, noise, timesteps)
-        else:
-            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+    def create_model(self):
+        if self.accelerator.is_main_process:
+            pipeline_args = {}
 
-        
-        loss = torch.nn.functional.mse_loss(model_pred.float(), target.float(), reduction="mean")
-        self.log('train_loss', loss)
-        return loss
-    
-    def validation_step(self, batch, batch_idx):
-        x = batch['input']
-        y_hat = batch['output']
-        y = self.forward(x)
-        y_tensor = self.to_tensor(y_hat)
-        self.real_images.append(y_tensor)
-        latents = self.model.vae.encode(x).to(dtype=weight_dtype).latent_dist.sample()
-        latents = latents * 0.18215
+            if self.text_encoder is not None:
+                pipeline_args["text_encoder"] = self.unwrap_model(self.text_encoder)
 
-        # Sample noise that we'll add to the latents
-        noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
 
-        # Sample a random timestep for each image 
-        timesteps = torch.randint(
-            0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device
-        )
-        timesteps = timesteps.long()
+            pipeline = DiffusionPipeline.from_pretrained(
+                self.model_name,
+                unet=self.unwrap_model(self.unet),
+                **pipeline_args,
+            )
 
-        # Add noise to the latents according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+            # We train on the simplified learning objective. If we were previously predicting a variance, we need the scheduler to ignore it
+            scheduler_args = {}
 
-        # Get the text embedding for conditioning  
-        encoder_hidden_states = self.model.text_encoder(x)[0]
+            if "variance_type" in pipeline.scheduler.config:
+                variance_type = pipeline.scheduler.config.variance_type
 
-        # Predict the noise residual
-        model_pred = self.model.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+                if variance_type in ["learned", "learned_range"]:
+                    variance_type = "fixed_small"
 
-        # Get the target for loss depending on the prediction type
-        if noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif noise_scheduler.config.prediction_type == "v_prediction":
-            target = noise_scheduler.get_velocity(latents, noise, timesteps)
-        else:
-            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+                scheduler_args["variance_type"] = variance_type
 
-        
-        loss = torch.nn.functional.mse_loss(model_pred.float(), target.float(), reduction="mean")
-        
-        self.log('val_loss', loss)
-        return loss
-    
-    def test_step(self, batch, batch_idx):
-        x = batch['input']
-        y_hat = batch['output']
-        y = self.forward(x)
-        loss = torch.nn.functional.mse_loss(y, y_hat)
-        self.log('test_loss', loss)
-        return loss
-    
+            pipeline.scheduler = pipeline.scheduler.from_config(pipeline.scheduler.config, **scheduler_args)
+
+            self.model = pipeline
+            self.model.text_encoder.to(self.unet.device)
+            self.model.unet.to(self.unet.device)
+            self.model.vae.to(self.unet.device)
+
     def predict_step(self, batch, batch_idx):
         x = batch['input']
         y = self(x)
-        y_tensor = self.to_tensor(y)
+        y_tensor = self.uint8transform(self.transform(y)).clone().cpu()
         self.fake_images.append(y_tensor)
         return self(x)
 
@@ -205,6 +322,24 @@ class StableDiffusionModule(pl.LightningModule):
     def reset_images(self):
         self.fake_images = []
         return
+
+    def import_model_class_from_model_name_or_path(self, pretrained_model_name_or_path):
+        text_encoder_config = PretrainedConfig.from_pretrained(
+            pretrained_model_name_or_path,
+            subfolder="text_encoder"
+        )
+        model_class = text_encoder_config.architectures[0]
+
+        if model_class == "CLIPTextModel":
+            from transformers import CLIPTextModel
+
+            return CLIPTextModel
+        elif model_class == "T5EncoderModel":
+            from transformers import T5EncoderModel
+
+            return T5EncoderModel
+        else:
+            raise ValueError(f"{model_class} is not supported.")
         
 class StableDiffusionLargeModule(pl.LightningModule):
     def __init__(self, device):
